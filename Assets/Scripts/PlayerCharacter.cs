@@ -24,6 +24,7 @@ public struct CharacterInput
     public Quaternion Rotation;
     public Vector2 Move;
     public bool Jump;
+    public bool JumpSustain;
     public CrouchInput Crouch;
 }
 
@@ -35,6 +36,9 @@ public class PlayerCharacter : MonoBehaviour, ICharacterController
     [Space] [SerializeField] private float walkSpeed = 20f;
     [SerializeField] private float crouchSpeed = 7f;
     [SerializeField] private float jumpSpeed = 20f;
+    [SerializeField] private float airSpeed = 15f;
+    [SerializeField] private float airAcceleration = 70f;
+    [Range(0f, 1f)] [SerializeField] private float jumpSustainGravity = 0.4f;
     [SerializeField] private float gravity = -90f;
     [Space] [SerializeField] private float standHeight = 2f;
     [SerializeField] private float crouchHeight = 1f;
@@ -51,6 +55,7 @@ public class PlayerCharacter : MonoBehaviour, ICharacterController
     private Quaternion _requestedRotation;
     private Vector3 _requestedMovement;
     private bool _requestedJump;
+    private bool _requestedSustainedJump;
     private bool _requestedCrouch;
     private Collider[] _uncrouchOverlapResults;
 
@@ -69,6 +74,7 @@ public class PlayerCharacter : MonoBehaviour, ICharacterController
         _requestedMovement = Vector3.ClampMagnitude(_requestedMovement, 1f);
         _requestedMovement = input.Rotation * _requestedMovement;
         _requestedJump = _requestedJump || input.Jump;
+        _requestedSustainedJump = input.JumpSustain;
         _requestedCrouch = input.Crouch switch
         {
             CrouchInput.Toggle => !_requestedCrouch,
@@ -134,9 +140,35 @@ public class PlayerCharacter : MonoBehaviour, ICharacterController
                 t: 1f - Mathf.Exp(-response * deltaTime)
             );
         }
+        // in the air
         else
         {
-            currentVelocity += motor.CharacterUp * (gravity * deltaTime);
+            //air movement
+            if (_requestedMovement.sqrMagnitude > 0f)
+            {
+                var planarMovement = Vector3.ProjectOnPlane(
+                    vector: _requestedMovement,
+                    planeNormal: motor.CharacterUp
+                ).normalized * _requestedMovement.magnitude;
+
+                var currentPlanarVelocity = Vector3.ProjectOnPlane(
+                    vector: currentVelocity,
+                    planeNormal: motor.CharacterUp
+                );
+
+                var movementForce = planarMovement * (airAcceleration * deltaTime);
+
+                var targetPlanarVelocity = currentPlanarVelocity + movementForce;
+
+                targetPlanarVelocity = Vector3.ClampMagnitude(targetPlanarVelocity, airSpeed);
+                currentVelocity += targetPlanarVelocity - currentPlanarVelocity;
+            }
+            //gravity
+            var effectiveGravity = gravity;
+            var verticalSpeed = Vector3.Dot(currentVelocity, motor.CharacterUp);
+            if (_requestedSustainedJump && verticalSpeed > 0f)
+                effectiveGravity *= jumpSustainGravity;
+            currentVelocity += motor.CharacterUp * (effectiveGravity * deltaTime);
         }
 
         if (_requestedJump)
