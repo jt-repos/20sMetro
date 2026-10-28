@@ -117,3 +117,6 @@ InitTestScene*.unity*
 
 # Unity VCS
 ignore.conf
+
+/cloaked.conf
+/.plastic/

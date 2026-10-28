@@ -5,6 +5,7 @@ using UnityEngine;
 using Quaternion = UnityEngine.Quaternion;
 using Vector2 = UnityEngine.Vector2;
 using Vector3 = UnityEngine.Vector3;
+using Vector4 = UnityEngine.Vector4;
 
 
 public enum CrouchInput
@@ -33,6 +34,7 @@ public struct CharacterState
 {
     public bool Grounded;
     public Stance Stance;
+    public Vector3 Velocity;
 }
 
 public class PlayerCharacter : MonoBehaviour, ICharacterController
@@ -80,6 +82,7 @@ public class PlayerCharacter : MonoBehaviour, ICharacterController
     private bool _requestedJump;
     private bool _requestedSustainedJump;
     private bool _requestedCrouch;
+    private bool _requestedCrouchInAir;
     private Collider[] _uncrouchOverlapResults;
 
     public void Initialize()
@@ -158,7 +161,28 @@ public class PlayerCharacter : MonoBehaviour, ICharacterController
                 if (moving && crouching && (wasStanding || wasInAir))
                 {
                     _state.Stance = Stance.Slide;
-                    var slideSpeed = Mathf.Max(slideStartSpeed, currentVelocity.magnitude);
+                    
+                    // Landing => motor projects velocity on flat plane (KinematicCharacterMotor.HandleVelocityProjection())
+                    // Usually good, since this prevents sliding
+                    // During sliding, it's undesired
+                    // Reproject last frame's falling velocity onto the ground normal to slide
+                    if (wasInAir)
+                    {
+                        currentVelocity = Vector3.ProjectOnPlane(
+                            vector: _lastState.Velocity,
+                            planeNormal: motor.GroundingStatus.GroundNormal
+                        );
+                    }
+                    
+                    // don't give boost when falling of a steep ledge
+                    var effectiveSlideStartSpeed = slideStartSpeed;
+                    if (!_lastState.Grounded && !_requestedCrouchInAir)
+                    {
+                        effectiveSlideStartSpeed = 0f;
+                        _requestedCrouchInAir = false;
+                    }
+                    
+                    var slideSpeed = Mathf.Max(effectiveSlideStartSpeed, currentVelocity.magnitude);
                     currentVelocity = motor.GetDirectionTangentToSurface(
                         direction: currentVelocity,
                         surfaceNormal: motor.GroundingStatus.GroundNormal
@@ -250,7 +274,20 @@ public class PlayerCharacter : MonoBehaviour, ICharacterController
                 }
                 
                 //prevent air-climbing
-                
+                if (motor.GroundingStatus.FoundAnyGround)
+                {
+                    if (Vector3.Dot(movementForce, currentVelocity + movementForce) > 0f)
+                    {
+                        var obstructionNormal = Vector3.Cross(
+                            motor.CharacterUp, Vector3.Cross(
+                                motor.CharacterUp,
+                                motor.GroundingStatus.GroundNormal
+                            )
+                        ).normalized;
+
+                        movementForce = Vector3.ProjectOnPlane(movementForce, obstructionNormal);
+                    }
+                }
                 currentVelocity += movementForce;
             }
             
@@ -264,13 +301,22 @@ public class PlayerCharacter : MonoBehaviour, ICharacterController
 
         if (_requestedJump)
         {
-            _requestedJump = false;
-            _requestedCrouch = false;
-            motor.ForceUnground(time: 0.1f);
+            var grounded = motor.GroundingStatus.IsStableOnGround;
+            if (grounded)
+            {
+                _requestedJump = false;
+                _requestedCrouch = false;
+                _requestedCrouchInAir = false;
+                motor.ForceUnground(time: 0.1f);
 
-            var currentVerticalSpeed = Vector3.Dot(currentVelocity, motor.CharacterUp);
-            var targetVerticalSpeed = Mathf.Max(currentVerticalSpeed, jumpSpeed);
-            currentVelocity += motor.CharacterUp * (targetVerticalSpeed - currentVerticalSpeed);
+                var currentVerticalSpeed = Vector3.Dot(currentVelocity, motor.CharacterUp);
+                var targetVerticalSpeed = Mathf.Max(currentVerticalSpeed, jumpSpeed);
+                currentVelocity += motor.CharacterUp * (targetVerticalSpeed - currentVerticalSpeed);
+            }
+            else
+            {
+                _requestedJump = false;
+            }
         }
     }
 
@@ -327,6 +373,7 @@ public class PlayerCharacter : MonoBehaviour, ICharacterController
         }
 
         _state.Grounded = motor.GroundingStatus.IsStableOnGround;
+        _state.Velocity = motor.Velocity;
         _lastState = _tempState;
     }
 
